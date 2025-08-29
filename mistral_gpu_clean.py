@@ -55,23 +55,33 @@ class MistralChat:
         logger.info(f"✅ Test inference: {test}")
     
     @modal.method()
-    def chat(self, message: str, max_tokens: int = 100):
-        """Generate response"""
+    def chat(self, prompt: str, max_tokens: int = 100, temperature: float = 0.7, stop: list | None = None):
+        """Generate response from a generic prompt (stateless).
+
+        Accepts a raw prompt and optional generation parameters so this service is not chat-only.
+        """
         try:
+            if stop is None:
+                stop = ["</s>", "[INST]", "[/INST]"]
+
+            wrapped = f"[INST] {prompt} [/INST]"
             response = self.llm(
-                f"[INST] {message} [/INST]",
+                wrapped,
                 max_tokens=max_tokens,
-                temperature=0.7,
-                stop=["</s>", "[INST]", "[/INST]"]
+                temperature=temperature,
+                stop=stop,
             )
-            
+
             if isinstance(response, dict):
+                # llama-cpp-python returns {'choices':[{'text': ...}], ...}
                 text = response.get("choices", [{}])[0].get("text", "").strip()
             else:
                 text = str(response).strip()
-                
+
             return {
+                "prompt": prompt,
                 "response": text,
+                "raw": response,
                 "status": "success"
             }
         except Exception as e:
@@ -144,10 +154,35 @@ def web():
 
 @app.function(image=image)
 @modal.web_endpoint(method="POST")
-def chat_api(message: str):
-    """Chat API endpoint"""
+def chat_api(payload: dict = None, message: str = None):
+    """Generic API endpoint: accept JSON body or legacy query 'message'.
+
+    Prefer JSON body; fall back to query param for backward compatibility.
+    """
+    logger.info(f"chat_api called; payload present={payload is not None}, message={message}")
+
+    body = payload if isinstance(payload, dict) else {}
+
+    # If body absent, fall back to query param
+    prompt = (body.get("prompt") or body.get("message") or body.get("input")) if body else None
+    if not prompt and message:
+        prompt = message
+
+    max_tokens = (body.get("max_tokens") if body else None) or 100
+    temperature = (body.get("temperature") if body else None) or 0.7
+    stop = (body.get("stop") if body else None)
+
+    if not prompt:
+        return {"status": "failed", "error": "missing 'prompt' (or 'message'/'input')"}
+
     chat_instance = MistralChat()
-    return chat_instance.chat.remote(message)
+    try:
+        fut = chat_instance.chat.remote(prompt, max_tokens, temperature, stop)
+        result = fut.get(timeout=600)
+        return result
+    except Exception as e:
+        logger.error(f"chat_api error: {e}")
+        return {"status": "failed", "error": str(e)}
 
 if __name__ == "__main__":
     # Test locally
