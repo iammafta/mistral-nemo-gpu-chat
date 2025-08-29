@@ -1,0 +1,7 @@
+modal
+fastapi
+uvicorn
+llama-cpp-python[server]
+pydantic
+psutil
+requests
